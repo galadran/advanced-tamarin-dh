@@ -1,0 +1,281 @@
+
+theory bluetooth_patched_RF
+begin
+
+/* Author: Dennis Jackson */
+
+
+
+builtins: diffie-hellman, hashing
+
+/*
+
+==============================================================================
+summary of summaries:
+
+analyzed: bluetooth_patched_RF.spthy
+
+  weak_functional (exists-trace): verified (20 steps)
+  functional (exists-trace): verified (18 steps)
+  key_secrecy_init (all-traces): falsified - found trace (21 steps)
+  key_secrecy_resp (all-traces): verified (60 steps)
+  leakage (all-traces): verified (15 steps)
+
+==============================================================================
+
+real	4m58.973s
+user	47m37.936s
+sys	27m9.120s
+
+
+*/
+
+
+functions: element/3, extract_element/1
+equations: extract_element(element(t,s,n)) = n
+
+restriction Consistency:
+	"All  t s r1 r2 y #i #j .
+	Raised(t,s,r1,y) @ i & Raised(t,s,r2,y) @j
+	==> r1 = r2"
+
+restriction Identity:
+	"All  t r y #i .
+	Raised(t,grpid,r,y) @ i ==> r = grpid"
+
+rule Create_Device:
+    [Fr(~did),Fr(~id),Fr(~cap)]
+  --[  ]->
+    [!Device(~did,~id,~cap), Out(<~id,~cap>)]
+
+rule Init_Begin_DH_Exchange:
+	let
+		iPK = <element('C',grpid,'g'^~eph),element('C',grpid,'g'^~eph)>
+	in
+    [!Device(~did,~idI,~capI), Fr(~sid),Fr(~eph),!Device(~did2,~idR,~capR)]
+  --[  ]->
+    [ Init_Begin_DH(~sid,~did,~eph),Out(iPK)
+    , Out(<~idI,~capI>)
+    , !Init_Intended(~sid,~idR,~capR)
+    ]
+
+rule Resp_DH_Exchange:
+	let
+		iPK = <x,y>
+		rPK = <element('C',grpid,'g'^~eph),element('C',grpid,'g'^~eph)>
+	in
+	[!Device(~did,~idR,~capR),Fr(~sid),Fr(~eph),In(iPK),In(<~idI,~capI>),
+	 !Device(~did2,~idI,~capI)]
+	--[Eq(x,y)]->
+	[Resp_Finish_DH(~sid,~did,~eph,iPK),Out(rPK)
+	, !Resp_Intended(~sid,~idI,~capI)
+	]
+
+rule Init_Finish_DH_Exchange:
+	[Init_Begin_DH(~sid,~did,~eph),In(rPK)]
+	--[]->
+	[Init_Finish_DH(~sid,~did,~eph,rPK)]
+
+rule Resp_Begin_Auth:
+  let
+  		iPk = <x,y>
+  		rPK = <element('C',grpid,'g'^~eph),element('C',grpid,'g'^~eph)>
+  		cb = h(<'Cb',element('C',grpid,'g'^~eph),x,~rN,'0'>)
+  in
+    [Resp_Finish_DH(~sid,~did,~eph,iPk),Fr(~rN)]
+  --[  ]->
+    [ Resp_Begin_Auth(~sid,~did,~eph,iPk,~rN)
+    , Out(cb)
+    ]
+
+rule Init_Begin_Auth:
+	[In(Cb),Fr(~iN),Init_Finish_DH(~sid,~did,~eph,rPk)]
+	--[]->
+	[Out(~iN),Init_Begin_Auth(~sid,~did,~eph,rPk,~iN,Cb)]
+
+rule Resp_Finish_Auth:
+	[Resp_Begin_Auth(~sid,~did,~eph,iPk,~rN),In(iN)]
+	-->
+	[Out(~rN),Resp_Finish_Auth(~sid,~did,~eph,iPk,~rN,iN)]
+
+rule Init_Finish_Auth:
+	let
+		rPk = <x,y>
+  		rPK = <element('C',grpid,'g'^~eph),element('C',grpid,'g'^~eph)>
+		cCb = h('Cb',x,element('C',grpid,'g'^~eph),rN,'0')
+	in
+	[In(rN),Init_Begin_Auth(~sid,~did,~eph,rPk,~iN,Cb)]
+	--[Eq(Cb,cCb)]->
+	[Init_Finish_Auth(~sid,~did,~eph,rPk,~iN,rN)]
+
+rule Compare_Digits:
+	let
+		iPkR = <xiR,yiR>
+		rPkI = <xrI,yrI>
+		iPKI = <element('C',grpid,'g'^~ephI),element('C',grpid,'g'^~ephI)>
+		rPKR = <element('C',grpid,'g'^~ephR),element('C',grpid,'g'^~ephR)>
+		VI = h(<'g2',element('C',grpid,'g'^~ephI),xrI,~iNI,rNI>)
+		VR = h(<'g2',xiR,element('C',grpid,'g'^~ephR),iNR,~rNR>)
+	in
+	[ Init_Finish_Auth(~sidI,~didI,~ephI,rPkI,~iNI,rNI)
+	, Resp_Finish_Auth(~sidR,~didR,~ephR,iPkR,~rNR,iNR)
+	]
+	--[Eq(VI,VR)]->
+	[ Init_Finish_Compare(~sidI,~didI,~ephI,rPkI,~iNI,rNI)
+	, Resp_Finish_Compare(~sidR,~didR,~ephR,iPkR,~rNR,iNR)
+	]
+
+rule Init_Begin_Derive_Normal:
+	let
+		x = element('C',grpid,n) //grpid as curve is prime order (no subgroups)
+		rPk = <x,y> //In this case, these values are all equal!
+		dhkey = <element('C',r,n^~eph),element('C',r,n^~eph)>
+		mackey = h(<'f5','mackey',dhkey,~iN,rN,~idI,~idR>)
+		ltk = h(<'f5','ltk',dhkey,~iN,rN,~idI,~idR>)
+		EI = h(<mackey,~iN,rN,'0',~capI,~idI,~idR>)
+	in
+	[ Init_Finish_Compare(~sid,~did,~eph,rPk,~iN,rN)
+	, !Init_Intended(~sid,~idR,~capR)
+	, !Device(~did,~idI,~capI)
+	, In(r)
+	]
+	--[Eq(x,y),Raised('C',grpid,r,~eph)]->
+	[Out(EI)
+	, Init_Begin_Derive(~sid,~did,~eph,rPk,~iN,rN,mackey,ltk)
+	]
+
+rule Init_Begin_Derive_Invalid:
+	let
+		x = element(otx,osx,orx)
+		y = element(oty,osy,ory)
+		rPk = <x,y>
+		dhkey = <element(tx,rx,nx^~eph),element(ty,ry,ny^~eph)>
+		mackey = h(<'f5','mackey',dhkey,~iN,rN,~idI,~idR>)
+		ltk = h(<'f5','ltk',dhkey,~iN,rN,~idI,~idR>)
+		EI = h(<mackey,~iN,rN,'0',~capI,~idI,~idR>)
+	in
+	[ Init_Finish_Compare(~sid,~did,~eph,rPk,~iN,rN)
+	, !Init_Intended(~sid,~idR,~capR)
+	, !Device(~did,~idI,~capI)
+	, In(<tx,rx,nx,ty,ry,ny>)
+	]
+	--[InEq(x,y),Raised(<tx,ty>,<osx,osy>,<rx,ry>,~eph)]->
+	[Out(EI)
+	, Init_Begin_Derive(~sid,~did,~eph,rPk,~iN,rN,mackey,ltk)
+	]
+
+rule Resp_Derive_Normal:
+	let
+		x = element('C',grpid,n)
+		iPk = <x,y>
+		dhkey = <element('C',r,n^~eph),element('C',r,n^~eph)>
+		mackey = h(<'f5','mackey',dhkey,iN,~rN,~idI,~idR>)
+		ltk = h(<'f5','ltk',dhkey,iN,~rN,~idI,~idR>)
+		cEI = h(<mackey,iN,~rN,'0',~capI,~idI,~idR>)
+		ER =  h(<'f6',mackey,~rN,iN,'0',~capR,~idR,~idI>)
+		rPk = <element('C',grpid,'g'^~eph),element('C',grpid,'g'^~eph)>
+	in
+	[ Resp_Finish_Compare(~sid,~did,~eph,iPk,~rN,iN)
+	, !Resp_Intended(~sid,~idI,~capI)
+	, !Device(~did,~idR,~capR)
+	, In(EI)
+	, In(r)
+	]
+	--[Eq(EI,cEI)
+	,  Eq(x,y)
+	, Raised('C',grpid,r,~eph)
+	, Finished_R(~sid,~did,iPk,rPk,iN,~rN,~idI,~capI,mackey,ltk)
+	]->
+	[Out(ER)]
+
+rule Resp_Derive_Invalid:
+	let
+		x = element(otx,osx,orx)
+		y = element(oty,osy,ory)
+		iPk = <x,y>
+		dhkey = <element(tx,rx,nx^~eph),element(ty,ry,ny^~eph)>
+		mackey = h(<'f5','mackey',dhkey,iN,~rN,~idI,~idR>)
+		ltk = h(<'f5','ltk',dhkey,iN,~rN,~idI,~idR>)
+		cEI = h(<mackey,iN,~rN,'0',~capI,~idI,~idR>)
+		ER =  h(<'f6',mackey,~rN,iN,'0',~capR,~idR,~idI>)
+		rPk = <element('C',grpid,'g'^~eph),element('C',grpid,'g'^~eph)>
+	in
+	[ Resp_Finish_Compare(~sid,~did,~eph,iPk,~rN,iN)
+	, !Resp_Intended(~sid,~idI,~capI)
+	, !Device(~did,~idR,~capR)
+	, In(EI)
+	, In(<tx,rx,nx,ty,ry,ny>)
+	]
+	--[Eq(EI,cEI)
+	, InEq(x,y),Raised(<tx,ty>,<osx,osy>,<rx,ry>,~eph)
+	, Finished_R(~sid,~did,iPk,rPk,iN,~rN,~idI,~capI,mackey,ltk)
+	]->
+	[Out(ER)]
+
+rule Init_Finish_Derive:
+	let
+		iPk = <element('C',grpid,'g'^~eph),element('C',grpid,'g'^~eph)>
+		cER = h(<'f6',mackey,rN,~iN,'0',~capR,~idR,~idI>)
+	in
+	[Init_Begin_Derive(~sid,~did,~eph,rPk,~iN,rN,mackey,ltk)
+	, !Init_Intended(~sid,~idR,~capR)
+	, !Device(~did,~idI,~capI)
+	, In(ER)]
+	--[Eq(cER,ER)
+	, Finished_I(~sid,~did,iPk,rPk,~iN,rN,~idR,~capR,mackey,ltk)]->
+	[]
+
+restriction Equality:
+"
+	All x y #i . Eq(x,y) @ i ==> x = y
+"
+
+restriction InEquality:
+"
+	All x #i . InEq(x,x) @ i ==> F
+"
+
+lemma weak_functional:
+	exists-trace
+	"
+	Ex #i #j sidI sidR didI didR iPk1 iPk2 rPk1 rPk2 iN rN a1 a2 a3 a4 mackey1 mackey2 ltk1 ltk2 .
+		Finished_I(sidI,didI,iPk1,rPk1,iN,rN,a1,a2,mackey1,ltk1) @ i &
+		Finished_R(sidR,didR,iPk2,rPk2,iN,rN,a3,a4,mackey2,ltk2) @ j
+	"
+
+lemma functional:
+	exists-trace
+	"
+	Ex #i #j sidI sidR didI didR iPk rPk iN rN a1 a2 a3 a4 mackey ltk .
+		Finished_I(sidI,didI,iPk,rPk,iN,rN,a1,a2,mackey,ltk) @ i &
+		Finished_R(sidR,didR,iPk,rPk,iN,rN,a3,a4,mackey,ltk) @ j
+	"
+
+lemma key_secrecy_init:
+	"
+	All #i sid did iPk rPk iN rN a1 a2 mackey ltk .
+	Finished_I(sid,did,iPk,rPk,iN,rN,a1,a2,mackey,ltk) @ i
+	==>
+	(not Ex #j . K(mackey) @ j) &
+	(not Ex #k . K(ltk) @ k   )
+	"
+
+lemma key_secrecy_resp:
+	"
+	All #i sid did iPk rPk iN rN a1 a2 mackey ltk .
+	Finished_R(sid,did,iPk,rPk,iN,rN,a1,a2,mackey,ltk) @ i
+	==>
+	(not Ex #j . K(mackey) @ j) &
+	(not Ex #k . K(ltk) @ k   )
+	"
+
+lemma leakage:
+	"
+	not Ex t1 l1 r1 t2 l2 r2 y #i #j .
+	Raised(t1,l1,r1,y) @ i &
+	Raised(t2,l2,r2,y) @ j &
+	(not t1 = t2) &
+	(not r1 = grpid) &
+	(not r2 = grpid )
+	"
+end

@@ -1,0 +1,261 @@
+theory scuttlebutt_proper
+begin
+
+/* Author: Dennis Jackson */
+
+
+
+/*
+
+==============================================================================
+summary of summaries:
+
+analyzed: scuttlebutt-proper.spthy
+
+  SessionsExist (exists-trace): verified (16 steps)
+  InitKeySecret (all-traces): verified (200 steps)
+  RespKeySecret (all-traces): verified (25 steps)
+  UKS (all-traces): verified (15153 steps)
+  EphAgree (all-traces): falsified - found trace (16 steps)
+  Never_Two_Init (all-traces): verified (14375 steps)
+  Never_Two_Resp (all-traces): falsified - found trace (22 steps)
+  IToR_MatchingSessionExists (all-traces): falsified - found trace (16 steps)
+  secret_public (all-traces): verified (15 steps)
+  no_connect (all-traces): falsified - found trace (14 steps)
+
+==============================================================================
+
+real    131m36.927s
+user    1235m51.288s
+sys     814m1.676s
+
+Note: No need to duplicate exponentiation for the twist case as both are nearly-prime
+and twist-secure.
+ */
+
+builtins: diffie-hellman,symmetric-encryption,hashing
+
+functions: verify/3, sign/2, pk/1, true/0
+equations: verify(sign(m, sk), m, pk(sk)) = true
+functions: weakKey/1
+equations: verify(sign(m1,weakKey(x)),m2,weakKey(x)) = true
+
+functions: hmac/2
+
+functions: element/3, extract_element/1
+equations: extract_element(element(t,s,n)) = n
+
+restriction Consistency:
+	"All  t s r1 r2 y #i #j .
+	Raised(t,s,r1,y) @ i & Raised(t,s,r2,y) @j
+	==> r1 = r2"
+
+restriction Identity:
+	"All  t r y #i .
+	Raised(t,grpid,r,y) @ i ==> r = grpid"
+
+rule setup:
+	let SPub = element('ID',grpid,'g'^~SPri)
+		SigPub = pk(~SPri)
+	in
+	[Fr(~id),Fr(~SPri)]
+	--[Honest(~id,SPub),LegitStaticKey(~SPri),Pub(~id,SPub),Pub(~id,SigPub)]->
+	[!Role(~id,~SPri), !Cert(SPub,SigPub)]
+
+rule adv_setup: //There are no restrictions on claimed public keys
+	let Apub = element(t,s,'g'^x)
+	in
+	[In(<Apub,Apk>)]
+	-->
+	[!Cert(Apub,Apk)]
+
+rule init1:
+	let IEPub = element('ID',grpid,'g'^~IEPri)
+	in
+	[!Role(~id,~SPri),Fr(~IEPri)]
+	--[LegitEphKey(~IEPri),Initiator(~id)]->
+	[Out(<IEPub, hmac('K',IEPub)>), Init_State_1(~id,~IEPri)]
+
+rule resp1:
+	let
+		IEPub = element(t,s,n)
+		IMac = hmac('K',IEPub)
+		REPub = element('ID',grpid,'g'^~REPri)
+		REIEKey = element(t,r,n^~REPri)
+	in
+	[In(<IEPub,IMac>), !Role(~id,~Not_Used),Fr(~REPri),In(r)]
+	--[LegitEphKey(~REPri),Responder(~id)
+		,Raised(t,s,r,~REPri)]->
+	[Out(<REPub,hmac(<'K',REIEKey>, REPub)>), Resp_State_1(~id,~REPri,IEPub,REIEKey)]
+
+rule init2:
+	let
+		REPub = element(ret,res,ren)
+		RSPub = element(rst,rss,rsn)
+		REIEKey = element(ret,rer,ren^~IEPri)
+		RSIEKey = element(rst,rsr,rsn^~IEPri)
+		REISKey = element(ret,rer,ren^~ISPri)
+		ISigPub = pk(~ISPri)
+		ISPub = element('ID',grpid,'g'^~ISPri)
+		RMac = hmac(<'K',REIEKey>,REPub)
+		msg  = <ISPub,ISigPub,sign(<'K', RSPub,h(REIEKey)>,~ISPri)>
+		PreKey = <'K',REIEKey,RSIEKey>
+		SessionKey = <'K',REIEKey,RSIEKey,REISKey>
+	in
+	[!Role(~id,~ISPri), !Cert(RSPub,Not_Used), In(<rer,rsr>),
+	Init_State_1(~id,~IEPri), In(<REPub, RMac>)
+	]
+	--[Raised(ret,res,rer,~IEPri),Raised(rst,rss,rsr,~IEPri),Raised(ret,res,rer,~ISPri)]->
+	[Out(senc(msg,PreKey)), Init_State_2(~id,RSPub,~IEPri,REPub,msg,SessionKey)]
+
+rule resp2:
+	let
+		IEPub = element(iet,ies,ien)
+		ISPub = element(ist,iss,isn)
+		REPub = element('ID',grpid,'g'^~REPri)
+		RSPub = element('ID',grpid,'g'^~RSPri)
+		RSIEKey = element(iet,ier,ien^~RSPri)
+		REISKey = element(ist,isr,isn^~REPri)
+		PreKey = <'K',REIEKey,RSIEKey>
+		expSig = <'K',RSPub,h(REIEKey)>
+		SessionKey = <'K',REIEKey,RSIEKey,REISKey>
+		inc_msg = <ISPub,ISigPub,ISig>
+	in
+	[!Role(~id,~RSPri),Resp_State_1(~id,~REPri,IEPub,REIEKey),
+	In(senc(<ISPub,ISigPub,ISig>,PreKey)),In(<ier,isr>)
+	]
+	--[Eq(verify(ISig,expSig,ISigPub),true),
+	Session_R(~id,RSPub,ISPub,REPub,IEPub,SessionKey)
+	,Raised(iet,ies,ier,~RSPri)
+	,Raised(ist,iss,isr,~REPri)]->
+	[Out(senc(sign(<'K',inc_msg,h(REIEKey)>,~RSPri),SessionKey))]
+
+rule init3:
+	let
+		REPub = element(ret,res,ren)
+		RSPub = element(rst,rss,rsn)
+		ISPub = element('ID',grpid,'g'^~ISPri)
+		IEPub = element('ID',grpid,'g'^~IEPri)
+		REIEKey = element(ret,rer,ren^~IEPri)
+		expSig = <'K',exp_msg,h(REIEKey)>
+	in
+	[!Role(~id,~ISPri),Init_State_2(~id,RSPub,~IEPri,REPub,exp_msg,SessionKey),
+	!Cert(RSPub,RSigPub), In(senc(inc_sig,SessionKey)), In(rer)
+	]
+	--[Eq(verify(inc_sig,expSig,RSigPub),true),
+	Session_I(~id,ISPub,RSPub,IEPub,REPub,SessionKey)
+	,Raised(ret,res,rer,~IEPri)]->
+	[]
+
+lemma SessionsExist:
+	exists-trace
+		"Ex  Iid Rid Ipk Rpk Iep Rep key #i #j.
+		Session_I(Iid,Ipk,Rpk,Iep,Rep,key) @ i &
+		Session_R(Rid,Rpk,Ipk,Rep,Iep,key) @ j
+		"
+
+lemma InitKeySecret:
+	"All Iid Ipk Rpk Iep Rep key Rid #i #j.
+	Session_I(Iid,Ipk,Rpk,Iep,Rep,key) @ i &
+	Honest(Rid,Rpk) @ j
+	==>
+	not Ex #k. K(key) @ k
+	"
+
+lemma RespKeySecret:
+	"All Iid Ipk Rpk Iep Rep key Rid #i #j.
+	Session_R(Rid,Rpk,Ipk,Rep,Iep,key) @ i &
+	Honest(Iid,Ipk) @ j
+	==>
+	not Ex #k. K(key) @ k
+	"
+
+lemma UKS:
+	"All Iid1 Ipk1 Rpk1 Iep1 Rep1 Rid2 Rpk2
+	Ipk2 Rep2 Iep2 key #i #j #k #l.
+	Session_I(Iid1,Ipk1,Rpk1,Iep1,Rep1,key) @ i &
+	Session_R(Rid2,Rpk2,Ipk2,Rep2,Iep2,key) @ j &
+	Honest(Iid1,Ipk1) @ k &
+	Honest(Rid2,Rpk2) @ l
+	==>
+	Ipk1 = Ipk2 &
+	Rpk1 = Rpk2
+	"
+
+
+lemma EphAgree:
+	"All Iid Ipk Rpk Iep1 Rep1 Rid Rep2 Iep2 key #i #j #k #l.
+	Session_I(Iid,Ipk,Rpk,Iep1,Rep1,key) @ i &
+	Session_R(Rid,Rpk,Ipk,Rep2,Iep2,key) @ j &
+	Honest(Iid,Ipk) @ k &
+	Honest(Rid,Rpk) @ l
+	==>
+	Iep1 = Iep2 &
+	Rep1 = Rep2
+	"
+
+lemma Never_Two_Init:
+	"All Iid1 Ipk1 Rpk1 Iep1 Rep1 key #i #j.
+	Session_I(Iid1,Ipk1,Rpk1,Iep1,Rep1,key) @ i &
+	Honest(Iid1,Ipk1) @ j
+	==>
+	not Ex Iid2 Ipk2 Rpk2 Iep2 Rep2 #k #l.
+	not Iid1 = Iid2 &
+	Session_I(Iid2,Ipk2,Rpk2,Iep2,Rep2,key) @ k &
+	Honest(Iid2,Ipk2) @ l
+	"
+
+//Autoproves
+lemma Never_Two_Resp:
+	"All Iid1 Ipk1 Rpk1 Iep1 Rep1 key #i #j.
+	Session_R(Iid1,Ipk1,Rpk1,Iep1,Rep1,key) @ i &
+	Honest(Iid1,Ipk1) @ j
+	==>
+	not Ex Iid2 Ipk2 Rpk2 Iep2 Rep2 #k #l.
+	not Iid1 = Iid2 &
+	Session_R(Iid2,Ipk2,Rpk2,Iep2,Rep2,key) @ k &
+	Honest(Iid2,Ipk2) @ l
+	"
+
+lemma IToR_MatchingSessionExists:
+	"All Iid Rid Ipk Rpk Iep Rep key #i #j.
+	Session_I(Iid,Ipk,Rpk,Iep,Rep,key) @ i &
+	Honest(Rid,Rpk) @ j
+	==>
+	Ex #k.
+	Session_R(Rid,Rpk,Ipk,Rep,Iep,key) @ k
+	"
+
+rule RevealResponderPublic:
+	let SPub = 'g'^~SPri
+		SigPub = pk(~SPri)
+	in
+	[!Role(~id,~SPri)]
+	--[RevealPublic(~id)]->
+	[Out(<SPub,SigPub>)]
+
+lemma secret_public:
+
+	"
+	All x y #i . Pub(x,y) @ i & (not Ex #j1 . RevealPublic(x) @ j1)
+	& (not Ex #j2 . Initiator(x) @ j2)
+	==>
+	not Ex #k . K(y) @ k
+	"
+
+lemma no_connect:
+	"
+	All id RSPub ISPub REPub IEPub SessionKey #i #j .
+	Session_R(id,RSPub,ISPub,REPub,IEPub,SessionKey) @ i
+	&
+	K(SessionKey) @ j
+	==>
+	(Ex #k1 . RevealPublic(id) @ k1 & #k1 < #i)
+		|
+	( Ex #k2 . Initiator(id) @ k2 & #k2 < #i)
+	"
+
+restriction Equality:
+  "All x y #i. Eq(x,y) @i ==> x = y"
+
+end

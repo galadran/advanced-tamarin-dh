@@ -1,0 +1,128 @@
+
+theory tendermint_hashfix
+begin
+
+/* Author: Dennis Jackson */
+
+
+
+builtins: diffie-hellman,signing,hashing,symmetric-encryption
+
+/*
+==============================================================================
+summary of summaries:
+
+analyzed: tendermint_hashfix.spthy
+
+  weak_functional (exists-trace): verified (11 steps)
+  strong_functional (exists-trace): verified (11 steps)
+  init_key_secret (all-traces): verified (19 steps)
+  resp_key_secret (all-traces): verified (19 steps)
+
+==============================================================================
+
+real	0m1.481s
+user	0m19.604s
+sys	0m11.280s
+
+Note: No need to duplicate exponentiation for the twist case as both are nearly-prime
+and twist-secure.
+*/
+
+functions: element/3, extract_element/1
+equations: extract_element(element(t,s,n)) = n
+
+restriction Consistency:
+	"All  t s r1 r2 y #i #j .
+	Raised(t,s,r1,y) @ i & Raised(t,s,r2,y) @j
+	==> r1 = r2"
+
+restriction Identity:
+	"All  t r y #i .
+	Raised(t,grpid,r,y) @ i ==> r = grpid"
+
+rule setup:
+	let
+		pubkey = pk(~s)
+	in
+	[Fr(~id),Fr(~s)]
+	--[Honest(pubkey)]->
+	[!Role(~id,~s), !Cert(~id,pubkey),Out(pubkey)]
+
+rule adv_setup: //Proof of posessesion check
+	[Fr(~id),In(sk)]
+	--[Dishonest(pk(sk))]->
+	[!Cert(~id,pk(sk))]
+
+rule Init_1:
+	let
+		iDH = element('C',grpid,'g'^~x)
+	in
+	[!Role(~id,~st),!Cert(~resp,rPk),Fr(~x)]
+	-->
+	[Out(iDH),Session_I_1(~id,rPk,~x)]
+
+rule Resp_1:
+	let
+		iDH = element(t,s,n)
+		rDH= element('C',grpid,'g'^~y)
+		key = element(t,r,n^~y)
+	in
+	[!Role(~id,~st),!Cert(~init,iPk),Fr(~y),In(iDH),In(r)]
+	--[Raised(t,s,r,~y)]->
+	[Out(rDH),Session_R_1(~id,iPk,key,rDH,iDH)]
+
+rule Init_2:
+	let
+		rDH = element(t,su,n)
+		iDH = element('C',grpid,'g'^~x)
+		key = element(t,r,n^~x)
+		iPk = pk(~s)
+		sig = sign(h(<'I',iPk,rPk,iDH,rDH,key>),~s)
+		ct =  senc(<iPk,sig>,key)
+	in
+	[!Role(~id,~s),In(rDH),Session_I_1(~id,rPk,~x),In(r)]
+	--[Raised(t,su,r,~x)]->
+	[Session_I_2(~id,rPk,key,rDH,iDH),Out(ct)]
+
+rule Resp_2:
+	let
+		rPk = pk(~s)
+		sm = h(<'I',iPk,rPk,iDH,rDH,key>)
+		inc_ct =senc(<iPk,sig>,key)
+		out_ct = senc(<rPk,sign(h(<'R',iPk,rPk,iDH,rDH,key>),~s)>,key)
+	in
+	[!Role(~id,~s),In(inc_ct),Session_R_1(~id,iPk,key,rDH,iDH)]
+	--[Eq(verify(sig,sm,iPk),true),R_Finish(iPk,rPk,key)]->
+	[Out(out_ct)]
+
+rule Init_3:
+	let
+		ct = senc(<rPk,sig>,key)
+		iPk = pk(~s)
+	in
+	[!Role(~id,~s),In(ct),Session_I_2(~id,rPk,key,rDH,iDH)]
+	--[Eq(verify(sig,h(<'R',iPk,rPk,iDH,rDH,key>),rPk),true),I_Finish(iPk,rPk,key)]->
+	[]
+
+restriction Equality:
+	"All x y #i . Eq(x,y) @ i ==> x = y"
+
+lemma weak_functional:
+	exists-trace
+	"Ex i r k #i #j . I_Finish(i,r,k) @ i & R_Finish(i,r,k) @ j"
+
+lemma strong_functional:
+	exists-trace
+	"Ex i r k #i #j #k #l  . Honest(r) @ l & Honest(i)@ k & I_Finish(i,r,k) @ i & R_Finish(i,r,k) @ j"
+
+lemma init_key_secret:
+	"All i r k #i #j #k . Honest(i) @ i & Honest(r) @ j & I_Finish(i,r,k) @ k
+	==>
+	(not Ex #l . K(k) @ l)"
+
+lemma resp_key_secret:
+	"All i r k #i #j #k . Honest(i) @ i & Honest(r) @ j & R_Finish(i,r,k) @ k
+	==>
+	(not Ex #l . K(k) @ l)"
+end
